@@ -1,4 +1,4 @@
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -10,6 +10,7 @@ class _Strict(BaseModel):
 
 
 # ---------- Tipos compartidos ----------
+
 
 class CapturePolicy(_Strict):
     """Política de captura. Valores fijos: la restricción térmica vive en el tipo."""
@@ -25,6 +26,7 @@ class CapturePolicy(_Strict):
 
 
 # ---------- Eventos servidor → cliente ----------
+
 
 class CapturePolicyEvent(_Strict):
     t: Literal["capture.policy"]
@@ -74,13 +76,11 @@ class AgentErrorEvent(_Strict):
 
 # z.discriminatedUnion("t", [...])
 ServerPayload = Annotated[
-    Union[
-        CapturePolicyEvent,
-        FramePinEvent,
-        EquipmentIdentifiedEvent,
-        ProcedureSelectedEvent,
-        AgentErrorEvent,
-    ],
+    CapturePolicyEvent
+    | FramePinEvent
+    | EquipmentIdentifiedEvent
+    | ProcedureSelectedEvent
+    | AgentErrorEvent,
     Field(discriminator="t"),
 ]
 

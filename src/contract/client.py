@@ -1,4 +1,4 @@
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -10,6 +10,7 @@ class _Strict(BaseModel):
 
 
 # ---------- Eventos cliente → servidor ----------
+
 
 class FrameEvent(_Strict):
     """Etiqueta de un cuadro que viajó por el track de video. NO lleva la imagen."""
@@ -50,7 +51,7 @@ class EquipmentManualEvent(_Strict):
 
 
 ClientPayload = Annotated[
-    Union[FrameEvent, CaptureAppliedEvent, FrameMissingEvent, EquipmentManualEvent],
+    FrameEvent | CaptureAppliedEvent | FrameMissingEvent | EquipmentManualEvent,
     Field(discriminator="t"),
 ]
 

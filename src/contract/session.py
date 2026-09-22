@@ -1,4 +1,4 @@
-from typing import Annotated, Union
+from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
@@ -9,7 +9,7 @@ from .server import ServerPayload
 # Cualquier evento válido del hito 1, de cualquier lado.
 # La unión de payloads sigue discriminada por "t", así que un evento con
 # t="frame" solo intenta FrameEvent y el error apunta al campo real.
-AnyPayload = Annotated[Union[ServerPayload, ClientPayload], Field(discriminator="t")]
+AnyPayload = Annotated[ServerPayload | ClientPayload, Field(discriminator="t")]
 AnyEnvelope = Envelope[AnyPayload]
 
 _any_adapter = TypeAdapter(AnyEnvelope)

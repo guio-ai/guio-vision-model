@@ -1,4 +1,4 @@
-from typing import Annotated, Generic, Literal, TypeVar
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
@@ -12,10 +12,8 @@ UUID_STR = Annotated[
     ),
 ]
 
-P = TypeVar("P")
 
-
-class Envelope(BaseModel, Generic[P]):
+class Envelope[P](BaseModel):
     """Sobre común a todos los eventos, en ambas direcciones.
     Lo único que varía es el tipo del payload, por eso es genérico.
     """

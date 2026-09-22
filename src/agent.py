@@ -5,21 +5,17 @@ from dotenv import load_dotenv
 from livekit.agents import (
     Agent,
     AgentServer,
-    AgentSession,
     JobContext,
-    TurnHandlingOptions,
     cli,
-    inference,
-    room_io,
 )
-from livekit.plugins import ai_coustics
 from livekit.plugins import openai
-from livekit.rtc.participant import RemoteParticipant
+
 from room.events import on_particpant_connected, on_track_subscribed
 
 logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
+
 
 class Assistant(Agent):
     def __init__(self) -> None:
@@ -41,6 +37,7 @@ class Assistant(Agent):
                 """
             ),
         )
+
     # To add tools, use the @function_tool decorator.
     # Here's an example that adds a simple weather tool.
     # You also have to add `from livekit.agents import function_tool, RunContext` to the top of this file
