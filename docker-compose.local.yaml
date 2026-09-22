@@ -1,0 +1,76 @@
+# Override: run a self-hosted LiveKit server next to the agent for local
+# development, with no LiveKit Cloud project involved.
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.local.yaml up --build
+#
+# All LiveKit settings come from .env.local, for both containers:
+#
+#   LIVEKIT_URL=ws://livekit-server:7880   # the server's name on the Compose network
+#   LIVEKIT_API_KEY=devkey
+#   LIVEKIT_API_SECRET=<at least 32 characters>
+#
+# The agent reads them through env_file in docker-compose.yaml. The server reads
+# the same file and registers LIVEKIT_API_KEY / LIVEKIT_API_SECRET as its API key
+# pair, so the two cannot drift apart. Clients on this machine connect to
+# ws://localhost:7880 with that key and secret.
+
+services:
+  livekit-server:
+    image: livekit/livekit-server:${LIVEKIT_SERVER_VERSION:-v1.13.7}
+    container_name: guio-livekit-server
+    env_file:
+      - .env.local
+    # The image's entrypoint is /livekit-server. Wrap it in a shell so the key
+    # pair from .env.local can be turned into LIVEKIT_KEYS ("key: secret"), the
+    # only form the server accepts from the environment. `$$` stops Compose from
+    # interpolating at parse time; the shell in the container expands them.
+    # `env -i` hands the server only what it needs, so other secrets in
+    # .env.local (e.g. OPENAI_API_KEY) never reach the server process, and
+    # `exec` makes livekit-server PID 1 so SIGTERM reaches it directly.
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        : "$${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is not set in .env.local}"
+        : "$${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is not set in .env.local}"
+        exec env -i \
+          NODE_IP="$$NODE_IP" \
+          LIVEKIT_KEYS="$$LIVEKIT_API_KEY: $$LIVEKIT_API_SECRET" \
+          /livekit-server --config /etc/livekit.yaml
+    environment:
+      # IP the server advertises to clients for media (read by --node-ip).
+      # Empty = auto-detect, which yields the container IP. That works for the
+      # agent on the same network but a browser or app on the host or your LAN
+      # cannot reach it. For those clients pass this machine's LAN IP:
+      #   LIVEKIT_NODE_IP=192.168.1.20 docker compose -f docker-compose.yaml -f docker-compose.local.yaml up
+      NODE_IP: ${LIVEKIT_NODE_IP:-}
+    volumes:
+      - ./livekit/livekit.yaml:/etc/livekit.yaml:ro
+    networks:
+      livekit:
+        # Extra DNS name on the network, so ws://livekit:7880 also resolves.
+        aliases:
+          - livekit
+    ports:
+      - "7880:7880"       # HTTP API + WebSocket signaling
+      - "7881:7881"       # ICE over TCP (fallback when UDP is blocked)
+      - "7882:7882/udp"   # ICE over UDP, muxed on one port (rtc.udp_port)
+    healthcheck:
+      # The image is Alpine based; busybox wget is available. GET / returns "OK".
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:7880/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  agent:
+    # LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET come from .env.local via
+    # env_file in docker-compose.yaml. Nothing is overridden here.
+    depends_on:
+      livekit-server:
+        condition: service_healthy

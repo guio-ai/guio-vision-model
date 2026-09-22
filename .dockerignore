@@ -34,6 +34,11 @@ coverage/
 .env
 .env.*
 
+# Docker Compose stack and local LiveKit server config (not needed in the image)
+docker-compose*.yaml
+compose*.yaml
+livekit/
+
 # VCS, editor, OS
 .git
 .gitignore

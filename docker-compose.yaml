@@ -1,0 +1,90 @@
+# Docker Compose stack for the LiveKit agent.
+#
+# Default mode (this file alone) runs the agent against LiveKit Cloud with the
+# credentials in .env.local:
+#
+#   docker compose up --build -d
+#
+# Local mode adds a self-hosted livekit-server on the same Docker network. See
+# docker-compose.local.yaml:
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.local.yaml up --build
+#
+# Secrets come from .env.local through `env_file`. The file is excluded from the
+# image by .dockerignore, so the container only sees what Compose injects.
+# Variables in ${...} below are Compose interpolation and are read from your
+# shell (or a .env file), not from .env.local.
+
+name: guio-vision-model
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: guio-vision-model/agent:local
+    # Fail fast if the secrets file is missing instead of starting unauthenticated.
+    env_file:
+      - .env.local
+    environment:
+      # uv's cache sits on the volume below, a different filesystem from the
+      # venv, so uv cannot hardlink into it. Copy instead of warning on each start.
+      UV_LINK_MODE: copy
+    volumes:
+      # Model weights downloaded by `livekit.agents download-files` live under
+      # /app/.cache (HF_HOME and TORCH_HOME in the Dockerfile). A named volume
+      # keeps them across restarts and rebuilds. On first use Docker seeds the
+      # volume with the files already baked into the image.
+      - agent-cache:/app/.cache
+    networks:
+      - livekit
+    ports:
+      # Health check endpoint: GET / returns 200 once the agent server is
+      # registered with LiveKit, 503 otherwise. The agent needs no inbound
+      # traffic (it dials out over WebSocket), so bind to loopback only.
+      - "127.0.0.1:${AGENT_HEALTH_PORT:-8081}:8081"
+    healthcheck:
+      # The runtime image has no curl/wget; urlopen raises on any non-2xx status.
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    # Run tini as PID 1 so SIGTERM reaches `uv run` and the agent drains cleanly.
+    init: true
+    # On SIGTERM the agent server stops taking new jobs and lets running sessions
+    # finish. Give live conversations time to end before Docker sends SIGKILL.
+    # Use `docker compose down -t 5` for a quick stop during development.
+    stop_grace_period: 10m
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # LiveKit recommends about 4 vCPU / 8 GB per agent server for voice workloads
+    # (10-25 concurrent jobs). Uncomment and size for the host you deploy to.
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "4"
+    #       memory: 8g
+
+networks:
+  # Dedicated bridge network. Services resolve each other by service name
+  # (e.g. ws://livekit-server:7880 in local mode) and stay off the default bridge.
+  livekit:
+    name: guio-livekit
+    driver: bridge
+    # Uncomment to pin the subnet, e.g. to avoid overlapping a VPN range.
+    # ipam:
+    #   config:
+    #     - subnet: 172.28.0.0/24
+
+volumes:
+  agent-cache:
+    name: guio-agent-cache

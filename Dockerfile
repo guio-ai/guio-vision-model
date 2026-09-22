@@ -1,9 +1,10 @@
 # syntax=docker/dockerfile:1
 
-# Use the official UV Python base image with Python 3.14.7 on Debian Bookworm
+# Use the official UV Python base image with Python 3.14 on Debian Bookworm
 # UV is a fast Python package manager that provides better performance than pip
 # We use the slim variant to keep the image size smaller while still having essential tools
-ARG PYTHON_VERSION=3.14.7
+# Astral publishes minor-version tags only (python3.14-...), not patch-level ones.
+ARG PYTHON_VERSION=3.14
 FROM ghcr.io/astral-sh/uv:python${PYTHON_VERSION}-bookworm-slim AS base
 
 # Keeps Python from buffering stdout and stderr to avoid situations where
@@ -18,6 +19,15 @@ ENV UV_COMPILE_BYTECODE=1
 # Ensure local models are downloaded to a shared directory accessible by all stages.
 ENV HF_HOME=/app/.cache/huggingface
 ENV TORCH_HOME=/app/.cache/torch
+
+# CA certificates for outbound TLS: the LiveKit Cloud WebSocket, model provider
+# APIs (OpenAI, ...) and package/model downloads during the build. The slim base
+# ships a bundle, but installing it here keeps it present and current in both
+# stages even if the base image changes.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+  && update-ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 
 # --- Build stage ---
 # Install dependencies, build native extensions, and prepare the application
@@ -41,6 +51,13 @@ WORKDIR /app
 # Copy just the dependency files first, for more efficient layer caching
 COPY pyproject.toml uv.lock ./
 RUN mkdir -p src
+
+# Create the cache directories up front so they exist in the final image (owned by
+# appuser after the COPY --chown below) even when no plugin downloads model files.
+# A named volume mounted at /app/.cache (see docker-compose.yaml) is seeded from
+# them on first use, so the non-root runtime user can write HF/Torch model files
+# and uv's own cache there.
+RUN mkdir -p .cache/huggingface .cache/torch .cache/uv
 
 # Install Python dependencies using UV's lock file
 # --locked ensures we use exact versions from uv.lock for reproducible builds
