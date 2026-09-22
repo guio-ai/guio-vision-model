@@ -114,6 +114,53 @@ In production, use the `start` command:
 uv run python src/agent.py start
 ```
 
+## Run with Docker Compose
+
+[`docker-compose.yaml`](docker-compose.yaml) builds the image from the `Dockerfile`, injects secrets from `.env.local`, persists downloaded model files in the named volume `guio-agent-cache`, and runs the agent on its own bridge network `guio-livekit`. The agent only dials out to LiveKit, so the sole published port is the health check on `127.0.0.1:8081`.
+
+Copy `.env.example` to `.env.local`, fill in your LiveKit Cloud credentials and `OPENAI_API_KEY`, then:
+
+```console
+docker compose up --build -d
+docker compose logs -f agent
+curl -i http://127.0.0.1:8081/
+```
+
+The health check returns `200` once the agent server is registered with LiveKit and `503` otherwise.
+
+### Local LiveKit server
+
+[`docker-compose.local.yaml`](docker-compose.local.yaml) adds a self-hosted `livekit-server` on the same network. Both containers read the LiveKit settings from `.env.local`: the agent connects to `LIVEKIT_URL`, and the server registers `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` as its API key pair, so they cannot drift apart. Set these in `.env.local` (the secret must be at least 32 characters):
+
+```ini
+LIVEKIT_URL=ws://livekit-server:7880
+LIVEKIT_API_KEY=devkey
+LIVEKIT_API_SECRET=local-dev-secret-not-for-production
+```
+
+Then start the stack. Nothing leaves your machine:
+
+```console
+docker compose -f docker-compose.yaml -f docker-compose.local.yaml up --build
+```
+
+Clients on this machine connect to `ws://localhost:7880` with a token minted from the same key and secret:
+
+```console
+set -a; source .env.local; set +a
+lk token create --join --room demo --identity me --valid-for 24h
+```
+
+The server is configured in [`livekit/livekit.yaml`](livekit/livekit.yaml) and publishes 7880 (signaling), 7881/tcp and 7882/udp (media). If a browser or app on your machine joins a room but gets no media, the server is advertising its container IP. Pass your machine's LAN IP so it advertises a reachable address instead:
+
+```console
+LIVEKIT_NODE_IP=192.168.1.20 docker compose -f docker-compose.yaml -f docker-compose.local.yaml up
+```
+
+### Stopping
+
+`docker compose down` sends `SIGTERM`, which puts the agent server in draining mode, and waits up to 10 minutes (`stop_grace_period`) for active sessions to finish. Use `docker compose down -t 5` to cut that short during development. The model cache volume survives `down`; add `-v` to delete it.
+
 ## Frontend & Telephony
 
 Get started quickly with our pre-built frontend starter apps, or add telephony support:
@@ -153,6 +200,23 @@ Once you've started your own project based on this repo, you should:
 ## Deploying to production
 
 This project is production-ready and includes a working `Dockerfile`. To deploy it to LiveKit Cloud or another environment, see the [deploying to production](https://docs.livekit.io/deploy/agents/) guide.
+
+### Continuous deployment with GitHub Actions
+
+[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) deploys the agent to LiveKit Cloud with the LiveKit CLI. Every push to `main` that changes a file shipped in the image runs `lk agent deploy`. LiveKit Cloud builds the `Dockerfile` and rolls the new version out without interrupting active sessions.
+
+Configure these GitHub Actions secrets at the organization or repository level:
+
+| Secret | Used for |
+|--------|----------|
+| `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | Authenticating the CLI against your LiveKit Cloud project |
+| `OPENAI_API_KEY` | Injected into the agent container at runtime |
+
+Add further runtime secrets in the "Write agent secrets" step of the workflow. A placeholder whose GitHub secret is not set yet is skipped with a warning. LiveKit Cloud supplies the agent's own `LIVEKIT_*` variables, so those are never passed as agent secrets.
+
+**First deployment:** run the workflow from the Actions tab with `operation` set to `create`. It registers the agent, deploys it, and opens a pull request that adds the generated `livekit.toml` (project subdomain and agent id, no secrets). Merge it, and later pushes deploy automatically. Opening the pull request requires "Allow GitHub Actions to create and approve pull requests" in the repository or organization Actions settings. If that is off, download the `livekit-toml` artifact from the run and commit the file yourself.
+
+Manual runs can also target a [non-production deployment](https://docs.livekit.io/deploy/agents/deployments/) through the `deployment` input.
 
 ## Self-hosted LiveKit
 
