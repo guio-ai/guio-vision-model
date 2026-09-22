@@ -1,0 +1,31 @@
+# LiveKit server configuration for local development (docker-compose.local.yaml).
+# Not for production: well-known dev credentials, no TLS, no Redis.
+# All options: https://github.com/livekit/livekit/blob/master/config-sample.yaml
+
+# HTTP API + WebSocket signaling. Published to the host as localhost:7880.
+port: 7880
+
+# Listen on every interface inside the container so the published ports work.
+bind_addresses:
+  - "0.0.0.0"
+
+log_level: info
+
+rtc:
+  # Mux all WebRTC/UDP media on one port. A single port is far easier to publish
+  # through Docker's NAT than the default 50000-60000 range, and it must be
+  # published as UDP (see docker-compose.local.yaml). Do not set
+  # port_range_start/port_range_end alongside this.
+  udp_port: 7882
+  # ICE over TCP fallback for clients that cannot use UDP.
+  tcp_port: 7881
+  # There is no public IP to discover on a laptop, so skip STUN discovery. The
+  # server then advertises its container IP, which is reachable from the agent
+  # (same Docker network) but not from a browser on the host. For host or LAN
+  # clients set NODE_IP on the container (LIVEKIT_NODE_IP in the compose file).
+  use_external_ip: false
+
+# No API keys here. docker-compose.local.yaml passes them in through the
+# LIVEKIT_KEYS environment variable, built from LIVEKIT_API_KEY and
+# LIVEKIT_API_SECRET in .env.local, so the agent and the server always agree.
+# The server logs an error for secrets shorter than 32 characters.

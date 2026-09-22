@@ -1,0 +1,190 @@
+# Builds and deploys the agent to LiveKit Cloud with the LiveKit CLI.
+#
+#   push to main -> `lk agent deploy`: LiveKit Cloud builds the Dockerfile and
+#                   rolls the new version out to the production deployment.
+#   manual run   -> operation=deploy (same, optionally to a named non-production
+#                   deployment) or operation=create: a one-time bootstrap that
+#                   registers the agent, deploys it, and opens a pull request
+#                   adding the generated livekit.toml (project + agent id).
+#
+# Secrets (GitHub Actions secrets, organization or repository level):
+#   LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET  authenticate the CLI.
+#   OPENAI_API_KEY and any others listed in "Write agent secrets" are stored in
+#   LiveKit Cloud and injected into the agent container as environment variables.
+#   LiveKit Cloud sets the agent's own LIVEKIT_* variables; never pass those.
+#
+# Alternative: the official livekit/deploy-action wraps the same CLI but takes
+# all agent secrets as one comma-separated SECRET_LIST and only targets the
+# production deployment. https://github.com/livekit/deploy-action
+name: Deploy agent
+
+on:
+  push:
+    branches: [ main ]
+    # Only files that end up in the image trigger a deploy (mirrors .dockerignore).
+    # Later patterns win, so the workflow itself is re-included at the end.
+    paths:
+      - '**'
+      - '!**.md'
+      - '!docker-compose*.yaml'
+      - '!livekit/**'
+      - '!livekit.toml'
+      - '!scenarios.yaml'
+      - '!tests/**'
+      - '!.github/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "deploy a new version, or create the agent (first time only)"
+        type: choice
+        options: [deploy, create]
+        default: deploy
+      deployment:
+        description: "LiveKit deployment name; empty = production"
+        type: string
+        default: ""
+      region:
+        description: "Region to create the agent in; empty = nearest (create only)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+# One deploy at a time per branch. Never cancel one that is mid-rollout.
+concurrency:
+  group: deploy-agent-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  LIVEKIT_URL: ${{ secrets.LIVEKIT_URL }}
+  LIVEKIT_API_KEY: ${{ secrets.LIVEKIT_API_KEY }}
+  LIVEKIT_API_SECRET: ${{ secrets.LIVEKIT_API_SECRET }}
+
+jobs:
+  deploy:
+    name: ${{ inputs.operation == 'create' && 'Create agent' || 'Deploy new version' }}
+    runs-on: ubuntu-latest
+    # To require approval before production deploys, uncomment this and add
+    # required reviewers under Settings -> Environments -> production.
+    # environment: production
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Install LiveKit CLI
+      run: curl -sSL https://get.livekit.io/cli | bash
+
+    - name: Check LiveKit credentials
+      run: |
+        missing=""
+        for name in LIVEKIT_URL LIVEKIT_API_KEY LIVEKIT_API_SECRET; do
+          [ -n "${!name}" ] || missing="$missing $name"
+        done
+        if [ -n "$missing" ]; then
+          echo "::error::Missing GitHub secrets:$missing. Add them at the organization or repository level."
+          exit 1
+        fi
+
+    - name: Write agent secrets
+      # PLACEHOLDERS. One entry per secret the agent needs at runtime: add the
+      # GitHub secret under `env` and a matching printf line below. Values are
+      # written to a temp file that is passed to the CLI and never printed.
+      # Empty values are skipped (--ignore-empty-secrets), so a placeholder
+      # whose GitHub secret is not configured yet only produces a warning.
+      env:
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        # DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
+        # CARTESIA_API_KEY: ${{ secrets.CARTESIA_API_KEY }}
+      run: |
+        SECRETS_FILE="$RUNNER_TEMP/agent-secrets.env"
+        {
+          printf '%s=%s\n' OPENAI_API_KEY "$OPENAI_API_KEY"
+          # printf '%s=%s\n' DEEPGRAM_API_KEY "$DEEPGRAM_API_KEY"
+          # printf '%s=%s\n' CARTESIA_API_KEY "$CARTESIA_API_KEY"
+        } > "$SECRETS_FILE"
+        echo "SECRETS_FILE=$SECRETS_FILE" >> "$GITHUB_ENV"
+
+        unset_names=$(grep -E '=$' "$SECRETS_FILE" | cut -d= -f1 | paste -sd, -)
+        if [ -n "$unset_names" ]; then
+          echo "::warning::Agent secrets without a value in GitHub (skipped): $unset_names"
+        fi
+        echo "Prepared $(grep -cE '=.+' "$SECRETS_FILE" || true) agent secret(s)"
+
+    - name: Create agent (first deployment)
+      if: inputs.operation == 'create'
+      env:
+        DEPLOYMENT: ${{ inputs.deployment }}
+        REGION: ${{ inputs.region }}
+      run: |
+        if [ -f livekit.toml ]; then
+          echo "::error::livekit.toml already exists, so the agent is already created. Re-run with operation=deploy."
+          exit 1
+        fi
+        lk agent create --yes \
+          --secrets-file "$SECRETS_FILE" --ignore-empty-secrets \
+          ${REGION:+--region "$REGION"} \
+          ${DEPLOYMENT:+--deployment "$DEPLOYMENT"}
+        echo "Generated livekit.toml:"
+        cat livekit.toml
+
+    - name: Upload livekit.toml
+      if: inputs.operation == 'create'
+      uses: actions/upload-artifact@v4
+      with:
+        name: livekit-toml
+        path: livekit.toml
+        if-no-files-found: error
+
+    - name: Deploy new version
+      if: github.event_name == 'push' || inputs.operation == 'deploy'
+      env:
+        DEPLOYMENT: ${{ inputs.deployment }}
+      run: |
+        if [ ! -f livekit.toml ]; then
+          echo "::error::livekit.toml not found. Run this workflow manually with operation=create once and merge the pull request it opens."
+          exit 1
+        fi
+        lk agent deploy --yes \
+          --secrets-file "$SECRETS_FILE" --ignore-empty-secrets \
+          ${DEPLOYMENT:+--deployment "$DEPLOYMENT"}
+
+    - name: Show agent status
+      run: lk agent status
+
+  add-config:
+    name: Open pull request with livekit.toml
+    needs: deploy
+    if: inputs.operation == 'create'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - uses: actions/download-artifact@v4
+      with:
+        name: livekit-toml
+
+    - name: Commit livekit.toml and open pull request
+      # Needs "Allow GitHub Actions to create and approve pull requests" enabled
+      # in the repository or organization Actions settings. If it is off, the
+      # branch is still pushed and the file is available as the run's artifact.
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        branch="livekit-agent-config-${GITHUB_RUN_ID}"
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git checkout -b "$branch"
+        git add livekit.toml
+        git commit -m "Add LiveKit Cloud agent config (livekit.toml)"
+        git push origin "$branch"
+        gh pr create --base "$GITHUB_REF_NAME" --head "$branch" \
+          --title "Add LiveKit Cloud agent config" \
+          --body "Adds the livekit.toml generated by the \"Deploy agent\" workflow (run ${GITHUB_RUN_ID}). It holds the project subdomain and agent id, no secrets. Once merged, pushes to main deploy the agent automatically." \
+        || echo "::warning::Could not open the pull request. Branch $branch was pushed; open the PR manually or download the livekit-toml artifact."
