@@ -2,6 +2,11 @@ name: "Create or Deploy Agent"
 on:
   workflow_dispatch:
     inputs:
+      working_directory:
+        description: 'Working directory for the agent'
+        required: true
+        type: string
+        default: '.'
       operation:
         description: 'Which operation to run'
         required: true
@@ -14,7 +19,7 @@ on:
 jobs:
   create-agent:
     runs-on: ubuntu-latest
-    environment: "."
+    environment: ${{ github.event.inputs.working_directory }}
     if: github.event.inputs.operation == 'create'
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}
@@ -70,7 +75,7 @@ jobs:
           TIMEOUT: 5m
   deploy-agent:
     runs-on: ubuntu-latest
-    environment: "."
+    environment: ${{ github.event.inputs.working_directory }}
     if: github.event.inputs.operation == 'deploy'
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}
